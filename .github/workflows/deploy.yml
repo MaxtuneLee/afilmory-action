@@ -2,7 +2,7 @@ name: Deploy Afilmory to Server
 
 on:
   push:
-    branches: ['self-deployment']
+    branches: ['main']
 
   workflow_dispatch:
 
@@ -12,8 +12,8 @@ permissions:
   id-token: write
 
 concurrency:
-  group: 'pages'
-  cancel-in-progress: false
+  group: 'deploy'
+  cancel-in-progress: true
 
 env:
   BUILD_PATH: '.' # default value when not using subfolders
@@ -26,8 +26,18 @@ jobs:
       name: production
       url: https://gallery.mxte.cc
     steps:
-      - name: Checkout # Checkout the repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+        with:
+          repository: Afilmory/Afilmory
+          path: ${{ env.BUILD_PATH }}
+
+      - uses: actions/checkout@v5
+        with:
+          path: config-files
+
+      - name: Move config files to build path # Move configuration files to the build path
+        run: |
+          cp -r config-files/. ${{ env.BUILD_PATH }}/
 
       - name: Set up pnpm # Setup pnpm package manager
         uses: pnpm/action-setup@v4
@@ -35,7 +45,7 @@ jobs:
       - name: Set up Node.js # Setup Node.js environment
         uses: actions/setup-node@v4
         with:
-          node-version: '20' # Specify your desired Node.js version
+          node-version: '22' # Specify your desired Node.js version
           cache: 'pnpm' # Cache pnpm dependencies
       
       - name: Cache pnpm modules
@@ -48,7 +58,7 @@ jobs:
             **/node_modules
           key: ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
           restore-keys: |
-            ${{ runner.os }}-pnpm-
+            ${{ runner.os }}-pnpm-${{ hashFiles('**/pnpm-lock.yaml') }}
 
       - name: Install dependencies # Install project dependencies
         run: pnpm install --frozen-lockfile
@@ -62,14 +72,23 @@ jobs:
             apps/ssr/.next/static
           key: ${{ runner.os }}-build-${{ hashFiles('apps/ssr/**/*.js', 'apps/ssr/**/*.ts', 'apps/ssr/**/*.tsx', 'apps/ssr/**/*.json') }}
           restore-keys: |
-            ${{ runner.os }}-build-
+            ${{ runner.os }}-build-${{ hashFiles('apps/ssr/**/*.js', 'apps/ssr/**/*.ts', 'apps/ssr/**/*.tsx', 'apps/ssr/**/*.json') }}
+      
+      - name: Cache manifest artifacts # Cache Next.js build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            packages/data/src/photos-manifest.json
+          key: ${{ runner.os }}-build-manifest
+          restore-keys: |
+            ${{ runner.os }}-build-manifest
 
       - name: Create .env file # Create .env file from secrets for the Docker build
+          # echo PG_CONNECTION_STRING=${{ secrets.PG_CONNECTION_STRING }} >> .env
         run: |
           touch .env
           echo S3_ACCESS_KEY_ID=${{ secrets.S3_ACCESS_KEY_ID }} >> .env
           echo S3_SECRET_ACCESS_KEY=${{ secrets.S3_SECRET_ACCESS_KEY }} >> .env
-          echo PG_CONNECTION_STRING=${{ secrets.PG_CONNECTION_STRING }} >> .env
 
       - name: Build manifest # Build the project manifest
         run: |
@@ -92,7 +111,7 @@ jobs:
 
       - name: Build Docker image # Build the Docker image with pre-built artifacts
         run: |
-          docker buildx build --platform linux/amd64 -f Dockerfile.deploy -t max/afilmory-gallery --output type=docker,dest=afilmory-gallery.tar .
+          docker buildx build --platform linux/amd64 -f dockerfile.deploy -t afilmory/afilmory-gallery --output type=docker,dest=afilmory-gallery.tar .
 
       - name: Extract image # Extract the built Docker image tarball
         run: |
@@ -140,8 +159,8 @@ jobs:
               docker rm afilmory-gallery
             fi
             # Remove existing image if it exists
-            if [ "$(docker images -q max/afilmory-gallery)" ]; then
-              docker rmi max/afilmory-gallery
+            if [ "$(docker images -q afilmory/afilmory-gallery)" ]; then
+              docker rmi afilmory/afilmory-gallery
             fi
             docker load -i afilmory-gallery.tar
-            docker run --restart always -d --name afilmory-gallery -p 8081:3000 max/afilmory-gallery
+            docker run --restart always -d --name afilmory-gallery -p 8081:3000 afilmory/afilmory-gallery
